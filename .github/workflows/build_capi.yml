@@ -4,6 +4,18 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '0 18 * * 6'
+  workflow_call:
+    inputs:
+      release_tag:
+        description: 'Release tag to attach the built archives to. Artifacts only when empty.'
+        type: string
+        required: false
+        default: ''
+      version:
+        description: 'Version string used in the archive file names.'
+        type: string
+        required: false
+        default: 'dev'
 
 env:
   CARGO_TERM_COLOR: always
@@ -11,64 +23,48 @@ env:
 jobs:
   build:
     runs-on: ${{ matrix.os }}
-    env:
-      # For some builds, we use cross to test on 32-bit and big-endian
-      # systems.
-      CARGO: cargo
-      # When CARGO is set to CROSS, this is set to `--target matrix.target`.
-      TARGET_FLAGS: ""
-      # When CARGO is set to CROSS, TARGET_DIR includes matrix.target.
-      TARGET_DIR: ./target
-      # Emit backtraces on panics.
-      RUST_BACKTRACE: 1
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
-        build: [linux-x86, linux-arm-v7, linux-arm-aarch64, macos-x86, macos-aarch64, win-msvc]
+        build: [linux-x86, linux-arm-aarch64, linux-arm-v7, macos-x86, macos-aarch64, win-x86, win-aarch64]
         include:
           - build: linux-x86
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            libname: libdeep_filter_ladspa
-            libext: so
+          - build: linux-arm-aarch64
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          # armv7 has no hosted runner, so it stays cross-compiled.
           - build: linux-arm-v7
             os: ubuntu-22.04
             target: armv7-unknown-linux-gnueabihf
             cc: arm-linux-gnueabihf-gcc
             cargoc-feat: '--features=vendored-openssl'
-            libname: libdeep_filter_ladspa
-            libext: so
-          - build: linux-arm-aarch64
-            os: ubuntu-22.04
-            target: aarch64-unknown-linux-gnu
-            cc: aarch64-linux-gnu-gcc
-            cargoc-feat: '--features=vendored-openssl'
-            libname: libdeep_filter_ladspa
-            libext: so
           - build: macos-x86
-            os: macos-12
+            os: macos-15-intel
             target: x86_64-apple-darwin
-            libname: libdeep_filter_ladspa
-            libext: dylib
           - build: macos-aarch64
-            os: macos-12
+            os: macos-15
             target: aarch64-apple-darwin
-            libname: libdeep_filter_ladspa
-            libext: dylib
-          - build: win-msvc
+          - build: win-x86
             os: windows-2022
             target: x86_64-pc-windows-msvc
             cargoc-feat: '--features=vendored-openssl'
             cinstall-args: '--crt-static'
-            libname: deep_filter_ladspa
-            libext: dll
+          - build: win-aarch64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            cargoc-feat: '--features=vendored-openssl'
+            cinstall-args: '--crt-static'
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly
+          toolchain: stable
           target: ${{ matrix.target }}
 
       - name: Rust cache
@@ -80,44 +76,35 @@ jobs:
       - name: Install gcc-arm-linux-gnueabihf
         if: ${{ matrix.target == 'armv7-unknown-linux-gnueabihf' }}
         run: |
-          mkdir .cargo
+          mkdir -p .cargo
           sudo apt-get update
-          sudo apt-get install --no-install-recommends gcc-arm-linux-gnueabihf crossbuild-essential-armhf
-          echo -e "[target.${{ matrix.target }}]\nlinker=\"${{ matrix.cc }}\"\n" > .cargo/config
-
-      - name: Install gcc-aarch64-linux-gnu
-        if: ${{ matrix.target == 'aarch64-unknown-linux-gnu' }}
-        run: |
-          mkdir .cargo
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends gcc-aarch64-linux-gnu crossbuild-essential-arm64
-          echo -e "[target.${{ matrix.target }}]\nlinker=\"${{ matrix.cc }}\"\n" > .cargo/config
+          sudo apt-get install --no-install-recommends -y gcc-arm-linux-gnueabihf crossbuild-essential-armhf
+          echo -e "[target.${{ matrix.target }}]\nlinker=\"${{ matrix.cc }}\"\n" > .cargo/config.toml
 
       - name: Setup target
+        shell: bash
         run: |
           echo "TARGET_FLAGS=--target ${{ matrix.target }}" >> $GITHUB_ENV
           echo "TARGET_DIR=./target/${{ matrix.target }}" >> $GITHUB_ENV
 
       - name: Install Perl on Windows
-        if: ${{ runner.os == 'windows' }}
+        if: ${{ runner.os == 'Windows' }}
         uses: shogo82148/actions-setup-perl@v1
         with:
           perl-version: '5.34'
 
-      - name: Install cargo-c
+      - name: Install cargo-c and cbindgen
         run: |
           cargo install cargo-c ${{ matrix.cargoc-feat }}
+          cargo install cbindgen
 
-      - name: Show command used for Cargo
-        run: |
-          echo "cargo command is: ${{ env.CARGO }}"
-          echo "target flag is: ${{ env.TARGET_FLAGS }}"
-          echo "target dir is: ${{ env.TARGET_DIR }}"
-
-      - name: Build release binary
+      # `capi` is not a default feature, so without it `mod capi` is never compiled
+      # and the resulting library exports none of the df_* functions.
+      - name: Build C-API library
         shell: bash
         run: |
-          ${{ env.CARGO }} cinstall --profile=release-lto -p deep_filter \
+          cargo cinstall --profile=release-lto -p deep_filter \
+            --features capi \
             --destdir=${{ env.TARGET_DIR }} \
             ${{ matrix.cinstall-args }} \
             ${{ env.TARGET_FLAGS }}
@@ -134,15 +121,23 @@ jobs:
           mv ${{ env.TARGET_DIR }}/usr staging
 
       - name: List built files
-        if: ${{ runner.os != 'macos' }}
-        run: tree staging
-
-      - name: List built files
-        if: ${{ runner.os == 'macos' }}
+        shell: bash
         run: find ./staging
+
+      - name: Archive
+        shell: bash
+        run: |
+          echo "DF_CAPI_NAME=deep_filter-capi-${{ inputs.version || 'dev' }}-${{ matrix.target }}" >> $GITHUB_ENV
+          tar -czf "deep_filter-capi-${{ inputs.version || 'dev' }}-${{ matrix.target }}.tar.gz" -C staging .
 
       - uses: actions/upload-artifact@v4
         with:
-          name: clib-${{ matrix.target }}
-          path: ./staging
-          retention-days: 7
+          name: ${{ env.DF_CAPI_NAME }}
+          path: ${{ env.DF_CAPI_NAME }}.tar.gz
+
+      - name: Upload release archive
+        if: ${{ inputs.release_tag != '' }}
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload --clobber ${{ inputs.release_tag }} ${{ env.DF_CAPI_NAME }}.tar.gz
