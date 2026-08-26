@@ -306,6 +306,8 @@ jobs:
   build-deepfilter-rs:
     needs: ['create-release']
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     env:
       # For some builds, we use cross to test on 32-bit and big-endian
       # systems.
@@ -395,12 +397,14 @@ jobs:
 
       - name: Upload release archive
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload --clobber v${{ env.DF_VERSION }} ${{ env.TARGET_DIR }}/${{ env.DF_BIN_NAME }}
 
   build-deepfilter-ladspa:
     needs: ['create-release']
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     env:
       # For some builds, we use cross to test on 32-bit and big-endian
       # systems.
@@ -491,5 +495,5 @@ jobs:
 
       - name: Upload release archive
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload v${{ env.DF_VERSION }} ${{ env.TARGET_DIR }}/${{ env.DF_LADSPA_NAME }}
