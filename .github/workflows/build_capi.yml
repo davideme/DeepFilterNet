@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build: [linux-x86, linux-arm-aarch64, linux-arm-v7, macos-x86, macos-aarch64, win-x86, win-aarch64]
+        build: [linux-x86, linux-arm-aarch64, linux-arm-v7, macos-x86, macos-aarch64, win-x86]
         include:
           - build: linux-x86
             os: ubuntu-22.04
@@ -48,14 +48,12 @@ jobs:
           - build: macos-aarch64
             os: macos-15
             target: aarch64-apple-darwin
+          # No aarch64-pc-windows-msvc: tract-linalg's build script only has an MSVC path for
+          # x86_64. On aarch64 it hands GNU-syntax assembly to the MSVC toolchain, the objects are
+          # never produced and lib.exe fails with LNK1181.
           - build: win-x86
             os: windows-2022
             target: x86_64-pc-windows-msvc
-            cargoc-feat: '--features=vendored-openssl'
-            cinstall-args: '--crt-static'
-          - build: win-aarch64
-            os: windows-11-arm
-            target: aarch64-pc-windows-msvc
             cargoc-feat: '--features=vendored-openssl'
             cinstall-args: '--crt-static'
     steps:
