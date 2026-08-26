@@ -583,6 +583,9 @@ mod tests {
     use std::sync::Once;
 
     use super::*;
+    // `util` only exists under the `dataset` feature. Nothing in this module draws from the RNG,
+    // so the seeding is optional and the tests can run without the HDF5 stack.
+    #[cfg(feature = "dataset")]
     use crate::util::seed_from_u64;
     use crate::wav_utils::*;
 
@@ -590,6 +593,7 @@ mod tests {
 
     /// Setup function that is only run once, even if called multiple times.
     fn setup() -> (Array2<f32>, usize) {
+        #[cfg(feature = "dataset")]
         seed_from_u64(42);
         create_out_dir().expect("Could not create output directory");
 
