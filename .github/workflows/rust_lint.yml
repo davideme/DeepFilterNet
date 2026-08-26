@@ -70,7 +70,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build: [linux-x86, linux-aarch64, macos-x86, macos-aarch64, win-x86, win-aarch64]
+        build: [linux-x86, linux-aarch64, macos-x86, macos-aarch64, win-x86]
         include:
           - build: linux-x86
             os: ubuntu-22.04
@@ -80,10 +80,9 @@ jobs:
             os: macos-15-intel
           - build: macos-aarch64
             os: macos-15
+          # aarch64-pc-windows-msvc is absent on purpose: tract-linalg cannot build there.
           - build: win-x86
             os: windows-2022
-          - build: win-aarch64
-            os: windows-11-arm
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
