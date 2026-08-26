@@ -669,7 +669,10 @@ impl DfTract {
 
     pub fn set_spec_buffer(&mut self, spec: ArrayView2<f32>) -> Result<()> {
         debug_assert_eq!(self.spec_buf.shape(), spec.shape());
-        let mut buf = self.spec_buf.to_array_view_mut()?.into_shape([self.ch, self.n_freqs])?;
+        let mut buf = self
+            .spec_buf
+            .to_array_view_mut()?
+            .into_shape_with_order([self.ch, self.n_freqs])?;
         for (i_ch, mut b_ch) in spec.outer_iter().zip(buf.outer_iter_mut()) {
             for (&i, b) in i_ch.iter().zip(b_ch.iter_mut()) {
                 *b = i
@@ -768,7 +771,7 @@ fn init_encoder_impl(
     n_ch: usize,
 ) -> Result<TypedModel> {
     log::debug!("Start init encoder.");
-    let s = m.symbol_table.sym("S");
+    let s = m.sym("S");
 
     let nb_erb = df_cfg.get("nb_erb").unwrap().parse::<usize>()?;
     let nb_df = df_cfg.get("nb_df").unwrap().parse::<usize>()?;
@@ -817,7 +820,7 @@ fn init_erb_decoder_impl(
     mask_reduction: Option<ReduceMask>,
 ) -> Result<TypedModel> {
     log::debug!("Start init ERB decoder.");
-    let s = m.symbol_table.sym("S");
+    let s = m.sym("S");
 
     let nb_erb = df_cfg.get("nb_erb").unwrap().parse::<usize>()?;
     let layer_width = net_cfg.get("conv_ch").unwrap().parse::<usize>()?;
@@ -930,7 +933,7 @@ fn init_df_decoder_impl(
     n_ch: usize,
 ) -> Result<TypedModel> {
     log::debug!("Start init DF decoder.");
-    let s = m.symbol_table.sym("S");
+    let s = m.sym("S");
 
     let nb_erb = df_cfg.get("nb_erb").unwrap().parse::<usize>()?;
     let nb_df = df_cfg.get("nb_df").unwrap().parse::<usize>()?;
