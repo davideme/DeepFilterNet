@@ -57,7 +57,7 @@ jobs:
             cargoc-feat: '--features=vendored-openssl'
             cinstall-args: '--crt-static'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
@@ -128,7 +128,7 @@ jobs:
           echo "DF_CAPI_NAME=deep_filter-capi-${{ inputs.version || 'dev' }}-${{ matrix.target }}" >> $GITHUB_ENV
           tar -czf "deep_filter-capi-${{ inputs.version || 'dev' }}-${{ matrix.target }}.tar.gz" -C staging .
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ env.DF_CAPI_NAME }}
           path: ${{ env.DF_CAPI_NAME }}.tar.gz
