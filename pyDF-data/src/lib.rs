@@ -10,17 +10,21 @@ use df::hdf5_key_cache::*;
 use df::util::{init_logger, DfLogger, LogMessage};
 use df::Complex32;
 use ndarray::{ArrayD, ShapeError};
-use numpy::{IntoPyArray, PyArray1, PyArray4};
+use numpy::prelude::*;
+use numpy::{PyArray1, PyArray4};
 use pyo3::exceptions::{PyRuntimeError, PyStopIteration, PyValueError};
 use pyo3::prelude::*;
 
 #[pymodule]
-fn libdfdata(_py: Python, m: &PyModule) -> PyResult<()> {
+fn libdfdata(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<_FdDataLoader>()?;
     Ok(())
 }
 
-#[pyclass]
+// `unsendable`: DataLoader holds an mpsc::Receiver, which is !Sync, and pyo3 requires #[pyclass]
+// types to be Sync. The loader is driven from the thread that created it, so pinning it there is
+// accurate rather than restrictive.
+#[pyclass(unsendable)]
 struct _FdDataLoader {
     loader: DataLoader,
     finished: bool,
@@ -57,22 +61,51 @@ struct _FdDataLoader {
 // }
 
 type FdBatch<'py> = (
-    &'py PyArray4<Complex32>, // speech
-    &'py PyArray4<Complex32>, // noisy
-    &'py PyArray4<f32>,       // feat_erb
-    &'py PyArray4<Complex32>, // feat_spec
-    &'py PyArray1<usize>,     // lengths
-    &'py PyArray1<usize>,     // max_freq
-    &'py PyArray1<i8>,        // snr
-    &'py PyArray1<i8>,        // gain
-    &'py PyArray1<f32>,       // Timings until each sample and the overall batch was ready
-    &'py PyArray1<usize>,     // clean ids
+    Bound<'py, PyArray4<Complex32>>, // speech
+    Bound<'py, PyArray4<Complex32>>, // noisy
+    Bound<'py, PyArray4<f32>>,       // feat_erb
+    Bound<'py, PyArray4<Complex32>>, // feat_spec
+    Bound<'py, PyArray1<usize>>,     // lengths
+    Bound<'py, PyArray1<usize>>,     // max_freq
+    Bound<'py, PyArray1<i8>>,        // snr
+    Bound<'py, PyArray1<i8>>,        // gain
+    Bound<'py, PyArray1<f32>>,       // Timings until each sample and the overall batch was ready
+    Bound<'py, PyArray1<usize>>,     // clean ids
 );
 
 #[pymethods]
 impl _FdDataLoader {
     #[allow(clippy::too_many_arguments)]
     #[new]
+    #[pyo3(signature = (
+        ds_dir,
+        config_path,
+        sr,
+        batch_size,
+        fft_size,
+        batch_size_eval=None,
+        max_len_s=None,
+        hop_size=None,
+        nb_erb=None,
+        nb_spec=None,
+        norm_alpha=None,
+        num_threads=None,
+        prefetch=None,
+        p_reverb=None,
+        p_bw_ext=None,
+        p_clipping=None,
+        p_zeroing=None,
+        p_interfer_sp=None,
+        p_air_absorption=None,
+        drop_last=None,
+        overfit=None,
+        seed=None,
+        min_nb_erb_freqs=None,
+        global_sampling_factor=None,
+        snrs=None,
+        gains=None,
+        log_level=None,
+    ))]
     fn new(
         py: Python,
         ds_dir: &str,
