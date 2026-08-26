@@ -52,8 +52,6 @@ __r_tol = 1e-4
 
 
 def get_ort_session(onnx: str, providers="gpu"):
-    global ORT_SESS
-
     import onnxruntime as ort
 
     providers = ORT_PROVIDERS_ALL if providers == "gpu" else ORT_PROVIDERS_CPU

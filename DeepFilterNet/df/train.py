@@ -45,7 +45,7 @@ MAX_NANS = 50
 
 @logger.catch
 def main():
-    global should_stop, debug, state, log_timings
+    global debug, state, log_timings
 
     parser = argparse.ArgumentParser()
     parser.add_argument("data_config_file", type=str, help="Path to a dataset config file.")
@@ -332,8 +332,6 @@ def run_epoch(
     lr_scheduler_values: Optional[np.ndarray] = None,
     wd_scheduler_values: Optional[np.ndarray] = None,
 ) -> float:
-    global debug
-
     log_freq = config("LOG_FREQ", cast=int, default=100, section="train")
     bs = loader.get_batch_size(split)
     logger.info("Start {} epoch {} with batch size {}".format(split, epoch, bs))
@@ -458,7 +456,7 @@ def run_epoch(
 
 
 def setup_losses() -> Loss:
-    global state, istft
+    global istft
     assert state is not None
 
     p = ModelParams()
@@ -564,7 +562,6 @@ def summary_write(
     prefix="train",
     idx: Optional[int] = None,
 ):
-    global state
     assert state is not None
 
     p = ModelParams()
