@@ -1,6 +1,6 @@
 [package]
 name = "deep-filter-ladspa"
-version = "0.5.7"
+version = "0.5.7-davideme.1"
 authors = ["Hendrik Schröter"]
 edition = "2021"
 rust-version = "1.85"
