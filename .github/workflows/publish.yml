@@ -51,6 +51,9 @@ jobs:
           draft: true
 
   build-libdf-wheels:
+    # Wheels are never attached to the release -- these jobs only feed publish-pypi-wheels, so
+    # they share its switch. Set the repository variable PUBLISH_PYPI to 'true' to build them.
+    if: ${{ vars.PUBLISH_PYPI == 'true' }}
     needs: ['create-release']
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
@@ -193,6 +196,7 @@ jobs:
           path: target/wheels/
 
   build-deepfilternet-wheels:
+    if: ${{ vars.PUBLISH_PYPI == 'true' }}
     needs: ['create-release']
     strategy:
       fail-fast: false
@@ -250,6 +254,7 @@ jobs:
 
   build-arm-wheels:
     name: Cross Compile ARM Python Wheels
+    if: ${{ vars.PUBLISH_PYPI == 'true' }}
     needs: ['create-release']
     runs-on: ubuntu-latest
     strategy:
