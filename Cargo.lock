@@ -1126,10 +1126,10 @@ dependencies = [
  "lewton",
  "log",
  "ndarray",
- "ndarray-rand",
  "num-complex",
  "ogg",
  "rand",
+ "rand_distr",
  "rand_xoshiro",
  "rayon",
  "realfft",
@@ -2799,17 +2799,6 @@ dependencies = [
  "portable-atomic-util",
  "rawpointer",
  "serde",
-]
-
-[[package]]
-name = "ndarray-rand"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f093b3db6fd194718dcdeea6bd8c829417deae904e3fcc7732dabcd4416d25d8"
-dependencies = [
- "ndarray",
- "rand",
- "rand_distr",
 ]
 
 [[package]]

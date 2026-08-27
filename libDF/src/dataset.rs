@@ -25,7 +25,7 @@ use claxon;
 use hdf5::{types::VarLenUnicode, File};
 use ndarray::concatenate;
 use ndarray::{prelude::*, Slice};
-use ndarray_rand::rand::prelude::{IteratorRandom, SliceRandom};
+use rand::prelude::{IteratorRandom, SliceRandom};
 use rayon::prelude::*;
 use realfft::num_traits::Zero;
 use serde::{Deserialize, Serialize};
