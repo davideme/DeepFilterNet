@@ -1,7 +1,10 @@
 name: Rust CI
 
 on:
+  # `branches` must be present, otherwise a bare `push:` also fires on tag pushes -- a release tag
+  # would re-run the whole matrix against a commit already tested on the branch it came from.
   push:
+    branches: ['**']
   schedule:
     - cron: '0 18 * * *'
 
