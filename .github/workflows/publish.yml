@@ -9,6 +9,10 @@ on:
   push:
     tags:
       - "v*[0-9]+.[0-9]+.[0-9]+"
+      # Suffixed tags too, e.g. the pre-release v0.5.7-rc.1. The pattern above cannot match
+      # those: in GitHub filter patterns `+` means "one or more of the preceding character" and
+      # `.` is literal, so it only matches tags ending in digits.digits.digits.
+      - "v*[0-9]+.[0-9]+.[0-9]+*"
 
 jobs:
   create-release:
