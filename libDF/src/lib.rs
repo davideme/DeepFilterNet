@@ -450,7 +450,9 @@ pub fn post_filter(noisy: &[Complex32], enh: &mut [Complex32], beta: f32) {
     let mut g = [0.0; 4];
     let mut g_sin = [0.0; 4];
     let mut pf = [0.0; 4];
-    for (n, e) in noisy.chunks_exact(4).zip(enh.chunks_exact_mut(4)) {
+    let (noisy_chunks, _) = noisy.as_chunks::<4>();
+    let (enh_chunks, _) = enh.as_chunks_mut::<4>();
+    for (n, e) in noisy_chunks.iter().zip(enh_chunks.iter_mut()) {
         g[0] = (e[0].norm() / (n[0].norm() + eps)).min(1.).max(eps);
         g[1] = (e[1].norm() / (n[1].norm() + eps)).min(1.).max(eps);
         g[2] = (e[2].norm() / (n[2].norm() + eps)).min(1.).max(eps);

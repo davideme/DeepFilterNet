@@ -865,7 +865,7 @@ impl RandReverbSim {
         let primes = [2, 3, 5, 7, 11];
         let mut factors = [0u32; 5];
         for (p, f) in primes.iter().zip(factors.iter_mut()) {
-            while missing % p == 0 {
+            while missing.is_multiple_of(*p) {
                 missing /= p;
                 *f += 1;
             }

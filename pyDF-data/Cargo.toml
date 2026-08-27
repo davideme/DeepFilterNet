@@ -3,7 +3,7 @@ name = "DeepFilterDataLoader"
 version = "0.5.7-rc.1"
 authors = ["Hendrik Schröter"]
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.91"
 
 [lib]
 name = "libdfdata"
