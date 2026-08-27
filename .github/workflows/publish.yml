@@ -308,6 +308,9 @@ jobs:
       version: ${{ needs.create-release.outputs.df_version }}
 
   build-deepfilter-rs:
+    # Opt-in: this fork releases the deep_filter C-API only. Set the repository variable
+    # RELEASE_CLI to 'true' to attach the deep-filter CLI binaries to the release again.
+    if: ${{ vars.RELEASE_CLI == 'true' }}
     needs: ['create-release']
     runs-on: ${{ matrix.os }}
     permissions:
@@ -405,6 +408,8 @@ jobs:
         run: gh release upload --clobber v${{ env.DF_VERSION }} ${{ env.TARGET_DIR }}/${{ env.DF_BIN_NAME }}
 
   build-deepfilter-ladspa:
+    # Opt-in, as above. Set RELEASE_LADSPA to 'true' to attach the LADSPA plugin.
+    if: ${{ vars.RELEASE_LADSPA == 'true' }}
     needs: ['create-release']
     runs-on: ${{ matrix.os }}
     permissions:
