@@ -25,7 +25,7 @@ use claxon;
 use hdf5::{types::VarLenUnicode, File};
 use ndarray::concatenate;
 use ndarray::{prelude::*, Slice};
-use ndarray_rand::rand::prelude::{IteratorRandom, SliceRandom};
+use rand::prelude::{IteratorRandom, SliceRandom};
 use rayon::prelude::*;
 use realfft::num_traits::Zero;
 use serde::{Deserialize, Serialize};
@@ -1998,7 +1998,10 @@ fn combine_noises(
     // Adjust number of noise channels to clean channels
     for ns in noises.iter_mut() {
         while ns.len_of(Axis(0)) > ch {
-            ns.remove_index(Axis(0), rng.uniform(0, ns.len_of(Axis(0))))
+            // Hoisted: ndarray 0.17 resolves remove_index through DerefMut to ArrayRef,
+            // which no longer permits the two-phase borrow of an inline argument.
+            let idx = rng.uniform(0, ns.len_of(Axis(0)));
+            ns.remove_index(Axis(0), idx)
         }
         while ns.len_of(Axis(0)) < ch {
             let r = rng.uniform(0, ns.len_of(Axis(0)));

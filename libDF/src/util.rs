@@ -2,11 +2,11 @@ use std::cell::{RefCell, UnsafeCell};
 use std::rc::Rc;
 use std::thread_local;
 
-use ndarray_rand::rand::distributions::{
+use rand::distributions::{
     uniform::{SampleUniform, Uniform},
     Distribution,
 };
-use ndarray_rand::rand::{Error as RandError, Rng, RngCore};
+use rand::{Error as RandError, Rng, RngCore};
 use rand_xoshiro::rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 use thiserror::Error;

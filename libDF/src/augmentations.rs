@@ -4,8 +4,9 @@ use std::ops::Range;
 use std::time::Instant;
 
 use ndarray::{concatenate, prelude::*, Slice};
-use ndarray_rand::rand::{prelude::IteratorRandom, seq::SliceRandom, Rng};
-use ndarray_rand::{rand_distr::Normal, rand_distr::Uniform, RandomExt};
+use rand::rngs::SmallRng;
+use rand::{prelude::IteratorRandom, seq::SliceRandom, Rng, SeedableRng};
+use rand_distr::{Distribution, Normal, Uniform};
 use thiserror::Error;
 
 use self::BiquadFilter::*;
@@ -699,8 +700,12 @@ fn gen_noise_with_scratch(
     // Adopted from torch_audiomentations
     let sr = sr as usize;
     let ch = num_channels as usize;
+    // Mirrors what ndarray-rand's `Array::random` did internally: a SmallRng seeded
+    // from rand's own thread_rng (not `util::thread_rng`), filled in standard layout.
+    let mut rng = SmallRng::from_rng(rand::thread_rng()).expect("failed to seed SmallRng");
+    let normal = Normal::new(0f32, 1f32).unwrap();
     let mut noise = if f_decay != 0. {
-        let mut noise = Array::random((ch, sr), Normal::new(0., 1.).unwrap());
+        let mut noise = Array2::from_shape_simple_fn((ch, sr), || normal.sample(&mut rng));
         let spec = Array2::uninit([ch, sr / 2 + 1]);
         // Safety: Will be fully overwritten by fft transform.
         let mut spec = unsafe { spec.assume_init() };
@@ -715,7 +720,7 @@ fn gen_noise_with_scratch(
         noise
     } else {
         // Fast path for white noise
-        Array::random((ch, sr), Normal::new(0., 1.).unwrap())
+        Array2::from_shape_simple_fn((ch, sr), || normal.sample(&mut rng))
     };
     let f = thread_rng()?.uniform(0.01, 0.95) / find_max_abs(&noise).unwrap().max(1.);
     noise *= f;
@@ -865,7 +870,7 @@ impl RandReverbSim {
         let primes = [2, 3, 5, 7, 11];
         let mut factors = [0u32; 5];
         for (p, f) in primes.iter().zip(factors.iter_mut()) {
-            while missing % p == 0 {
+            while missing.is_multiple_of(*p) {
                 missing /= p;
                 *f += 1;
             }

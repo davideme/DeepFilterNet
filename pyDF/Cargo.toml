@@ -3,7 +3,7 @@ name = "DeepFilterLib"
 version = "0.5.7-rc.1"
 authors = ["Hendrik Schröter"]
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.91"
 
 [lib]
 name = "libdf"
@@ -12,6 +12,6 @@ path = "src/lib.rs"
 
 [dependencies]
 deep_filter = { features = ["transforms", "logging"], path = "../libDF" }
-pyo3 = { version = "0.23", features = ["extension-module"]}
-numpy = "0.23"
-ndarray = "^0.16"
+pyo3 = { version = "0.29", features = ["extension-module"]}
+numpy = "0.29"
+ndarray = "^0.17"

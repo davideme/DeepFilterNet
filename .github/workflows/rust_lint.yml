@@ -27,6 +27,9 @@ jobs:
           - {command: build, rust: stable, args: '-p deep_filter', hdf5: false}
           - {command: build, rust: stable, args: '-p DeepFilterLib', hdf5: false}
           - {command: build, rust: stable, args: '-p DeepFilterDataLoader', hdf5: true}
+          # Pins the declared MSRV (rust-version in every Cargo.toml, msrv in clippy.toml)
+          # so the number is actually verified; every other row floats on stable/nightly.
+          - {command: check, rust: '1.91', args: '-p deep_filter --features tract,bin,wav-utils,transforms', hdf5: false}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
