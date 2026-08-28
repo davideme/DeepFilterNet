@@ -29,6 +29,12 @@ name = "deep-filter"
 path = "src/bin/enhance_wav.rs"
 required-features = ["bin", "tract", "wav-utils", "transforms"]
 
+[[bench]]
+name = "runtime"
+path = "benches/runtime.rs"
+harness = false
+required-features = ["tract", "default-model"]
+
 [features]
 default = ["default-model", "vorbis", "flac"]
 
@@ -78,6 +84,11 @@ tract = [
   "dep:flate2",
   "dep:tar",
 ]
+# Opt-in GPU backends. Linking one registers it with tract's runtime inventory,
+# which makes the "gpu-or-cpu" / "gpu" runtime names resolve to it. The default
+# runtime stays "cpu" either way -- see DEFAULT_RUNTIME in src/tract.rs.
+gpu-metal = ["tract", "dep:tract-metal"] # macOS/iOS only, no-op elsewhere
+gpu-cuda = ["tract", "dep:tract-cuda"]   # Linux/Windows only, no-op elsewhere
 default-model = [] # Include default DFN3 model
 default-model-ll = [] # Include default DFN3 low latency model
 nightly-features = []
@@ -137,6 +148,24 @@ getrandom_v04 = { package = "getrandom", version = "0.4", features = ["wasm_js"]
 console_error_panic_hook = { version = "0.1.1", optional = true }
 js-sys = { version = "0.3", optional = true }
 
+
+# Optional GPU backends, gated to the targets where they can exist at all:
+# tract-metal pulls in metal/objc (Apple only), tract-cuda pulls in cudarc
+# (no CUDA for armv7 or riscv64, hence the arch bound). Neither feature is on by
+# default, so the release matrix is unaffected regardless; the gates only mean
+# that enabling one on a target it cannot serve is a no-op rather than a build
+# failure. wasm32 matches neither.
+#
+# tract-cuda uses cudarc's "dynamic-loading", so it compiles with no CUDA
+# toolkit present and its check() fails cleanly at runtime, which is what lets
+# "gpu-or-cpu" fall back to the CPU on a machine with no CUDA driver.
+#
+# Pinned with "=" because both declare exact-version deps on tract-core.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+tract-metal = { version = "=0.23.5", optional = true }
+
+[target.'cfg(all(any(target_os = "linux", target_os = "windows"), any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
+tract-cuda = { version = "=0.23.5", optional = true }
 
 [target.'cfg(all(not(windows), not(target_os = "android"), not(target_os = "macos"), not(target_os = "freebsd"), not(target_env = "musl"), not(target_arch = "riscv64")))'.dependencies]
 jemallocator = { version = "0.5.0", optional = true }

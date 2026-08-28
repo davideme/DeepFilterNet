@@ -60,6 +60,11 @@ struct Args {
     /// If used with multiple channels, reduce the mask with max (1) or mean (2)
     #[arg(long, value_parser, default_value_t = 1)]
     reduce_mask: i32,
+    /// tract runtime used to run the models. "cpu" is the portable default;
+    /// "gpu-or-cpu" uses a GPU backend when one was compiled in and is
+    /// available, falling back to the CPU otherwise. Overridden by DF_RUNTIME.
+    #[arg(long, default_value = df::tract::DEFAULT_RUNTIME)]
+    runtime: String,
     /// Logging verbosity
     #[arg(
         long,
@@ -102,11 +107,14 @@ fn main() -> Result<()> {
 
     // Initialize with 1 channel
     let mut r_params = RuntimeParams::default();
-    r_params = r_params.with_atten_lim(args.atten_lim_db).with_thresholds(
-        args.min_db_thresh,
-        args.max_db_erb_thresh,
-        args.max_db_df_thresh,
-    );
+    r_params = r_params
+        .with_runtime(args.runtime.as_str())
+        .with_atten_lim(args.atten_lim_db)
+        .with_thresholds(
+            args.min_db_thresh,
+            args.max_db_erb_thresh,
+            args.max_db_df_thresh,
+        );
     if args.post_filter {
         r_params = r_params.with_post_filter(args.post_filter_beta);
     }
