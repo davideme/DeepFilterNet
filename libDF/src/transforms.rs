@@ -478,8 +478,7 @@ impl StreamingResampler {
         while pos < n {
             let take = (inner.chunk_in - inner.fill).min(n - pos);
             for (ch, i) in input.iter().enumerate().take(channels) {
-                inner.inbuf[ch][inner.fill..inner.fill + take]
-                    .copy_from_slice(&i[pos..pos + take]);
+                inner.inbuf[ch][inner.fill..inner.fill + take].copy_from_slice(&i[pos..pos + take]);
             }
             inner.fill += take;
             pos += take;
@@ -941,7 +940,11 @@ mod tests {
                 let x = noise_arr2(channels, len);
                 let want = resample_reference(x.view(), sr, new_sr, None).unwrap();
                 let got = resample(x.view(), sr, new_sr, None).unwrap();
-                assert_eq!(got.shape(), want.shape(), "sr {sr}->{new_sr} ch {channels} len {len}");
+                assert_eq!(
+                    got.shape(),
+                    want.shape(),
+                    "sr {sr}->{new_sr} ch {channels} len {len}"
+                );
                 assert_eq!(
                     got, want,
                     "sr {sr}->{new_sr} ch {channels} len {len} mismatch"
@@ -1011,5 +1014,4 @@ mod tests {
         let two_h = 2 * 3600 * 48000;
         assert_eq!(StreamingResampler::out_len(two_h, 48000, 44100), 317520000);
     }
-
 }

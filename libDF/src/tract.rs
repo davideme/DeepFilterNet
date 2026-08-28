@@ -1106,7 +1106,10 @@ mod tests {
         let mut fresh = DfTract::new(DfParams::default(), &rp).unwrap();
         let got = run(&mut cloned, noisy.view());
         let want = run(&mut fresh, noisy.view());
-        assert!(got.iter().any(|&x| x != 0.), "test signal was muted; pick a different asset");
+        assert!(
+            got.iter().any(|&x| x != 0.),
+            "test signal was muted; pick a different asset"
+        );
         assert_eq!(
             got, want,
             "clone of a pristine template diverged from a freshly constructed model"
