@@ -119,6 +119,10 @@ pub struct RuntimeParams {
     pub max_db_erb_thresh: f32,
     pub max_db_df_thresh: f32,
     pub reduce_mask: ReduceMask,
+    /// Name of the tract runtime used to prepare and run the models. `"cpu"` is
+    /// the default; `"gpu-or-cpu"` picks the first available GPU backend and
+    /// silently falls back to the CPU. See [`resolve_runtime`].
+    pub runtime: String,
 }
 impl RuntimeParams {
     pub fn new(
@@ -132,6 +136,7 @@ impl RuntimeParams {
     ) -> Self {
         let post_filter = post_filter_beta > 0.;
         Self {
+            runtime: DEFAULT_RUNTIME.to_string(),
             n_ch,
             post_filter,
             post_filter_beta,
@@ -169,6 +174,10 @@ impl RuntimeParams {
         self.reduce_mask = red;
         self
     }
+    pub fn with_runtime(mut self, runtime: impl Into<String>) -> Self {
+        self.runtime = runtime.into();
+        self
+    }
     pub fn default_with_ch(channels: usize) -> Self {
         RuntimeParams {
             n_ch: channels,
@@ -179,6 +188,7 @@ impl RuntimeParams {
             max_db_erb_thresh: 30.,
             max_db_df_thresh: 20.,
             reduce_mask: ReduceMask::MEAN,
+            runtime: DEFAULT_RUNTIME.to_string(),
         }
     }
 }
@@ -188,7 +198,51 @@ impl Default for RuntimeParams {
     }
 }
 
-pub type TractModel = TypedSimpleState;
+/// Default tract runtime. Kept as the plain CPU backend on purpose: the Metal
+/// backend reports itself as available unconditionally, so `gpu-or-cpu` would
+/// select it on any macOS host once linked, GPU or not. Opting in is explicit.
+pub const DEFAULT_RUNTIME: &str = "cpu";
+
+// tract registers its backends through `inventory`, which only sees a crate that
+// is actually linked into the binary. Nothing below calls into these crates by
+// name, so without the `use ... as _` the linker may drop the registrations and
+// `gpu-or-cpu` would quietly resolve to `cpu`.
+#[cfg(all(
+    feature = "gpu-cuda",
+    any(target_os = "linux", target_os = "windows"),
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+use tract_cuda as _;
+#[cfg(all(feature = "gpu-metal", any(target_os = "macos", target_os = "ios")))]
+use tract_metal as _;
+
+/// Resolve a runtime name to one of tract's registered backends.
+///
+/// `DF_RUNTIME` overrides `name`, which allows A/B-ing backends without a
+/// rebuild. Besides the concrete backend names (`cpu`, `metal`, `cuda`), tract
+/// understands the virtual `gpu` (fails when no GPU backend is available) and
+/// `gpu-or-cpu` (falls back to the CPU instead).
+pub fn resolve_runtime(name: &str) -> Result<&'static dyn Runtime> {
+    let requested = std::env::var("DF_RUNTIME").unwrap_or_else(|_| name.to_string());
+    let rt = runtime_for_name(&requested)
+        .with_context(|| format!("Failed to resolve tract runtime '{}'", requested))?
+        .with_context(|| {
+            let available: Vec<String> =
+                runtimes().map(|rt| rt.name().to_string()).collect();
+            format!(
+                "Unknown tract runtime '{}'. Registered backends: {:?} (plus the virtual 'gpu' and 'gpu-or-cpu')",
+                requested, available
+            )
+        })?;
+    log::info!("Using tract runtime '{}'", rt.name());
+    Ok(rt)
+}
+
+/// A spawned, stateful model instance. Boxed as a trait object so that the
+/// backend (`cpu`, `metal`, `cuda`, ...) is a runtime choice rather than a
+/// compile-time one. `State` is `Send` and clonable, which is what lets
+/// `DfTract` stay `Clone` for the per-thread copies made by ladspa/demo.
+pub type TractModel = Box<dyn State>;
 
 #[derive(Clone)]
 pub struct DfTract {
@@ -253,9 +307,13 @@ impl DfTract {
         )?;
         let df_dec =
             init_df_decoder_from_read(&mut Cursor::new(dfp.df_dec), model_cfg, df_cfg, ch)?;
-        let enc = TractModel::new(&enc.into_runnable()?)?;
-        let erb_dec = TractModel::new(&erb_dec.into_runnable()?)?;
-        let df_dec = TractModel::new(&df_dec.into_runnable()?)?;
+        // `prepare` is what optimizes the model (and, on GPU backends, rewrites it
+        // to device ops first), so the `init_*` above deliberately hand over an
+        // unoptimized graph.
+        let rt = resolve_runtime(&rp.runtime)?;
+        let enc = rt.prepare(enc).context("Failed to prepare encoder")?.spawn()?;
+        let erb_dec = rt.prepare(erb_dec).context("Failed to prepare ERB decoder")?.spawn()?;
+        let df_dec = rt.prepare(df_dec).context("Failed to prepare DF decoder")?.spawn()?;
         #[cfg(feature = "timings")]
         let t1 = Instant::now();
 
@@ -791,7 +849,9 @@ fn init_encoder_impl(
     m.declutter()?;
     let pulsed = PulsedModel::new(&m, s, &1.to_dim())?;
     log::info!("Init encoder");
-    let m = pulsed.into_typed()?.into_optimized()?;
+    // Left unoptimized on purpose: the selected `Runtime` optimizes (and, for GPU
+    // backends, transforms first) in `prepare`.
+    let m = pulsed.into_typed()?;
     Ok(m)
 }
 fn init_encoder(m: &Path, df_cfg: &ini::Properties, n_ch: usize) -> Result<TypedModel> {
@@ -897,8 +957,7 @@ fn init_erb_decoder_impl(
     }
     m = m.with_outputs_by_name(&[output_name])?;
 
-    let m = m.into_optimized()?;
-
+    // See note in `init_encoder_impl`: optimization is the runtime's job.
     Ok(m)
 }
 fn init_erb_decoder(
@@ -959,7 +1018,9 @@ fn init_df_decoder_impl(
     m.declutter()?;
     let pulsed = PulsedModel::new(&m, s, &1.to_dim())?;
     log::info!("Init DF decoder");
-    let m = pulsed.into_typed()?.into_optimized()?;
+    // Left unoptimized on purpose: the selected `Runtime` optimizes (and, for GPU
+    // backends, transforms first) in `prepare`.
+    let m = pulsed.into_typed()?;
     Ok(m)
 }
 fn init_df_decoder(

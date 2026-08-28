@@ -80,15 +80,20 @@ jobs:
         include:
           - build: linux-x86
             os: ubuntu-22.04
+            gpu_feature: gpu-cuda
           - build: linux-aarch64
             os: ubuntu-22.04-arm
+            gpu_feature: gpu-cuda
           - build: macos-x86
             os: macos-15-intel
+            gpu_feature: gpu-metal
           - build: macos-aarch64
             os: macos-15
+            gpu_feature: gpu-metal
           # aarch64-pc-windows-msvc is absent on purpose: tract-linalg cannot build there.
           - build: win-x86
             os: windows-2022
+            gpu_feature: gpu-cuda
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -103,3 +108,12 @@ jobs:
         run: cargo build -p deep_filter --features ${{ env.FEATURES }}
       - name: Test
         run: cargo test -p deep_filter --features ${{ env.FEATURES }}
+      # Build-only. The GPU backends are never *run* in CI: tract's Metal backend
+      # reports itself available unconditionally, so a GPU-less runner would still
+      # select it and produce meaningless numbers. This step only proves the
+      # optional dependency and its cfg gating still compile on each target.
+      - name: Build GPU backend (${{ matrix.gpu_feature }})
+        run: cargo build -p deep_filter --features ${{ env.FEATURES }},${{ matrix.gpu_feature }}
+      # Keeps benches/runtime.rs from rotting; it is not run here for the same reason.
+      - name: Build benches
+        run: cargo build -p deep_filter --features ${{ env.FEATURES }} --benches
