@@ -1,5 +1,3 @@
-use std::mem::MaybeUninit;
-
 use ndarray::{prelude::*, Slice};
 use rubato::{FftFixedInOut, Resampler};
 use thiserror::Error;
@@ -372,6 +370,184 @@ pub(crate) fn low_pass_resample(
     x.slice_axis_inplace(Axis(1), Slice::from(0..orig_len));
     Ok(x)
 }
+/// Streaming counterpart of [`resample`].
+///
+/// Feeds a [`FftFixedInOut`] resampler incrementally so that arbitrarily long audio can be
+/// resampled in O(chunk) memory. Because `FftFixedInOut` has a constant input and output chunk
+/// size, this issues exactly the same sequence of resampler calls as [`resample`] does for the
+/// same total input, and therefore produces bit-identical output.
+///
+/// When `sr == new_sr` this degrades to a zero-cost passthrough.
+pub struct StreamingResampler {
+    channels: usize,
+    sr: usize,
+    new_sr: usize,
+    /// Total *real* input frames pushed, excluding the zeros injected by [`Self::flush`].
+    frames_in: usize,
+    /// Total frames emitted downstream, after the front-delay trim.
+    frames_out: usize,
+    inner: Option<Inner>,
+}
+
+struct Inner {
+    resampler: FftFixedInOut<f32>,
+    chunk_in: usize,
+    chunk_out: usize,
+    inbuf: Vec<Vec<f32>>,
+    outbuf: Vec<Vec<f32>>,
+    /// Frames currently staged in `inbuf`.
+    fill: usize,
+    /// Remaining front-delay frames to drop, initialized to the resampler's `output_delay()`.
+    skip: usize,
+}
+
+impl StreamingResampler {
+    pub fn new(
+        sr: usize,
+        new_sr: usize,
+        channels: usize,
+        chunk_size: Option<usize>,
+    ) -> Result<Self> {
+        let inner = if sr == new_sr {
+            None
+        } else {
+            let resampler =
+                FftFixedInOut::<f32>::new(sr, new_sr, chunk_size.unwrap_or(2048), channels)
+                    .expect("Could not initialize resampler");
+            // `FftFixedInOut` rounds the requested chunk size to a valid multiple, so read the
+            // effective sizes back instead of assuming `chunk_size`.
+            let chunk_in = resampler.input_frames_max();
+            let chunk_out = resampler.output_frames_max();
+            let skip = resampler.output_delay();
+            let inbuf = resampler.input_buffer_allocate(true);
+            let outbuf = resampler.output_buffer_allocate(true);
+            Some(Inner {
+                resampler,
+                chunk_in,
+                chunk_out,
+                inbuf,
+                outbuf,
+                fill: 0,
+                skip,
+            })
+        };
+        Ok(StreamingResampler {
+            channels,
+            sr,
+            new_sr,
+            frames_in: 0,
+            frames_out: 0,
+            inner,
+        })
+    }
+
+    pub fn is_passthrough(&self) -> bool {
+        self.inner.is_none()
+    }
+
+    /// Number of output frames produced by `n_in` input frames.
+    ///
+    /// Integer math on purpose: the equivalent `f32` expression loses precision above ~1.7e7
+    /// frames, i.e. well within the range of a multi-hour file.
+    pub fn out_len(n_in: usize, sr: usize, new_sr: usize) -> usize {
+        (n_in as u128 * new_sr as u128).div_ceil(sr as u128) as usize
+    }
+
+    /// Push `n` deinterleaved input frames and append the resampled frames to `out`.
+    ///
+    /// `n` is arbitrary (zero is legal) and need not align with the resampler's chunk size.
+    /// The caller owns `out` and is expected to drain it between calls.
+    pub fn push(&mut self, input: &[&[f32]], n: usize, out: &mut [Vec<f32>]) -> Result<()> {
+        debug_assert_eq!(input.len(), self.channels);
+        debug_assert_eq!(out.len(), self.channels);
+        self.frames_in += n;
+        let channels = self.channels;
+        let limit = Self::out_len(self.frames_in, self.sr, self.new_sr);
+        let frames_out = &mut self.frames_out;
+        let inner = match self.inner.as_mut() {
+            None => {
+                for (o, i) in out.iter_mut().zip(input.iter()) {
+                    o.extend_from_slice(&i[..n]);
+                }
+                *frames_out += n;
+                return Ok(());
+            }
+            Some(i) => i,
+        };
+        let mut pos = 0;
+        while pos < n {
+            let take = (inner.chunk_in - inner.fill).min(n - pos);
+            for (ch, i) in input.iter().enumerate().take(channels) {
+                inner.inbuf[ch][inner.fill..inner.fill + take]
+                    .copy_from_slice(&i[pos..pos + take]);
+            }
+            inner.fill += take;
+            pos += take;
+            if inner.fill == inner.chunk_in {
+                inner.resampler.process_into_buffer(&inner.inbuf, &mut inner.outbuf, None)?;
+                inner.fill = 0;
+                Self::emit(inner, channels, limit, frames_out, out);
+            }
+        }
+        Ok(())
+    }
+
+    /// End of stream: zero-pad and process the partially filled chunk, then process one extra
+    /// all-zero chunk to drain the resampler's internal state.
+    ///
+    /// Afterwards `out` has received exactly `Self::out_len(total_pushed, sr, new_sr)` frames.
+    pub fn flush(&mut self, out: &mut [Vec<f32>]) -> Result<()> {
+        debug_assert_eq!(out.len(), self.channels);
+        let channels = self.channels;
+        let limit = Self::out_len(self.frames_in, self.sr, self.new_sr);
+        let frames_out = &mut self.frames_out;
+        let inner = match self.inner.as_mut() {
+            None => return Ok(()),
+            Some(i) => i,
+        };
+        let fill = inner.fill;
+        for ch in inner.inbuf.iter_mut() {
+            ch[fill..].fill(0.);
+        }
+        inner.fill = 0;
+        for round in 0..2 {
+            inner.resampler.process_into_buffer(&inner.inbuf, &mut inner.outbuf, None)?;
+            Self::emit(inner, channels, limit, frames_out, out);
+            if round == 0 {
+                for ch in inner.inbuf.iter_mut() {
+                    ch.fill(0.);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Append one freshly produced chunk to `out`, applying the two once-per-stream adjustments
+    /// that [`resample`] applies as a final slice: the front-delay trim and the truncation to
+    /// the exact output length.
+    fn emit(
+        inner: &mut Inner,
+        channels: usize,
+        limit: usize,
+        frames_out: &mut usize,
+        out: &mut [Vec<f32>],
+    ) {
+        // `skip` is `chunk_out / 2`, so it is always fully consumed by the first emitted chunk.
+        let start = inner.skip.min(inner.chunk_out);
+        inner.skip -= start;
+        // Never binding mid-stream: after `k` full chunks `frames_out` is `k * chunk_out -
+        // chunk_out / 2` while `limit` is exactly `k * chunk_out`. It only bites during `flush`.
+        let take = (inner.chunk_out - start).min(limit.saturating_sub(*frames_out));
+        if take == 0 {
+            return;
+        }
+        for (ch, o) in out.iter_mut().enumerate().take(channels) {
+            o.extend_from_slice(&inner.outbuf[ch][start..start + take]);
+        }
+        *frames_out += take;
+    }
+}
+
 /// Resample using a synchronous resample from rubato
 pub fn resample(
     x: ArrayView2<f32>,
@@ -381,58 +557,21 @@ pub fn resample(
 ) -> Result<Array2<f32>> {
     let channels = x.len_of(Axis(0));
     let len = x.len_of(Axis(1));
-    let out_len = (len as f32 * new_sr as f32 / sr as f32).ceil() as usize;
-    let chunk_size = chunk_size.unwrap_or(2048);
-    let mut resampler = FftFixedInOut::<f32>::new(sr, new_sr, chunk_size, channels)
-        .expect("Could not initialize resampler");
-    let chunk_size = resampler.input_frames_max();
-    // One extra to get the remaining resampler state buffer
-    let num_chunks = (len as f32 / chunk_size as f32).ceil() as usize + 1;
-    let chunk_size_out = resampler.output_frames_max();
-    let mut out = Array2::uninit((channels, chunk_size_out * num_chunks));
-    let mut inbuf = resampler.input_buffer_allocate(true);
-    let mut outbuf = resampler.output_buffer_allocate(true);
-    let mut out_chunk_iter = out.axis_chunks_iter_mut(Axis(1), chunk_size_out);
-    for chunk in x.axis_chunks_iter(Axis(1), chunk_size) {
-        for (chunk_ch, buf_ch) in chunk.axis_iter(Axis(0)).zip(inbuf.iter_mut()) {
-            if chunk_ch.len() == chunk_size {
-                chunk_ch.assign_to(buf_ch);
-            } else {
-                chunk_ch.assign_to(&mut buf_ch[..chunk_ch.len()]);
-                for b in buf_ch[chunk_ch.len()..].iter_mut() {
-                    *b = 0. // Zero pad
-                }
-            }
-        }
-        resampler.process_into_buffer(&inbuf, &mut outbuf, None)?;
-        for (res_ch, mut out_ch) in
-            outbuf.iter().zip(out_chunk_iter.next().unwrap().axis_iter_mut(Axis(0)))
-        {
-            debug_assert_eq!(res_ch.len(), out_ch.len());
-            for (&x, y) in res_ch.iter().zip(out_ch.iter_mut()) {
-                *y = MaybeUninit::new(x);
-            }
-        }
+    let out_len = StreamingResampler::out_len(len, sr, new_sr);
+    let mut rs = StreamingResampler::new(sr, new_sr, channels, chunk_size)?;
+    let mut out: Vec<Vec<f32>> = (0..channels).map(|_| Vec::with_capacity(out_len)).collect();
+    let x = x.as_standard_layout();
+    let rows: Vec<&[f32]> = x.rows().into_iter().map(|r| r.to_slice().unwrap()).collect();
+    rs.push(&rows, len, &mut out)?;
+    rs.flush(&mut out)?;
+    let mut flat = Vec::with_capacity(channels * out_len);
+    for ch in out.iter_mut() {
+        // The resampler always produces at least `out_len` frames; guard anyway so a short
+        // stream yields silence rather than a shape error.
+        ch.resize(out_len, 0.);
+        flat.append(ch);
     }
-    // Another round with zeros to get remaining state buffer
-    for in_ch in inbuf.iter_mut() {
-        in_ch.fill(0.)
-    }
-    resampler.process_into_buffer(&inbuf, &mut outbuf, None)?;
-    for (res_ch, mut out_ch) in
-        outbuf.iter().zip(out_chunk_iter.next().unwrap().axis_iter_mut(Axis(0)))
-    {
-        debug_assert_eq!(res_ch.len(), out_ch.len());
-        for (&x, y) in res_ch.iter().zip(out_ch.iter_mut()) {
-            *y = MaybeUninit::new(x);
-        }
-    }
-    let mut out = unsafe { out.assume_init() };
-    out.slice_axis_inplace(
-        Axis(1),
-        Slice::from(chunk_size_out / 2..chunk_size_out / 2 + out_len),
-    );
-    Ok(out)
+    Ok(Array2::from_shape_vec((channels, out_len), flat)?)
 }
 
 /// Bandwidth extension via spectral translation.
@@ -582,6 +721,8 @@ pub(crate) fn estimate_bandwidth(
 mod tests {
     use std::sync::Once;
 
+    use rstest::rstest;
+
     use super::*;
     // `util` only exists under the `dataset` feature. Nothing in this module draws from the RNG,
     // so the seeding is optional and the tests can run without the HDF5 stack.
@@ -712,4 +853,163 @@ mod tests {
         assert_eq!(max, 10.);
         Ok(())
     }
+
+    /// Verbatim copy of the pre-streaming `resample()` implementation, kept as a reference so
+    /// the rewrite can be proven output-preserving for existing callers.
+    fn resample_reference(
+        x: ArrayView2<f32>,
+        sr: usize,
+        new_sr: usize,
+        chunk_size: Option<usize>,
+    ) -> Result<Array2<f32>> {
+        use std::mem::MaybeUninit;
+        let channels = x.len_of(Axis(0));
+        let len = x.len_of(Axis(1));
+        let out_len = (len as f32 * new_sr as f32 / sr as f32).ceil() as usize;
+        let chunk_size = chunk_size.unwrap_or(2048);
+        let mut resampler = FftFixedInOut::<f32>::new(sr, new_sr, chunk_size, channels)
+            .expect("Could not initialize resampler");
+        let chunk_size = resampler.input_frames_max();
+        let num_chunks = (len as f32 / chunk_size as f32).ceil() as usize + 1;
+        let chunk_size_out = resampler.output_frames_max();
+        let mut out = Array2::uninit((channels, chunk_size_out * num_chunks));
+        let mut inbuf = resampler.input_buffer_allocate(true);
+        let mut outbuf = resampler.output_buffer_allocate(true);
+        let mut out_chunk_iter = out.axis_chunks_iter_mut(Axis(1), chunk_size_out);
+        for chunk in x.axis_chunks_iter(Axis(1), chunk_size) {
+            for (chunk_ch, buf_ch) in chunk.axis_iter(Axis(0)).zip(inbuf.iter_mut()) {
+                if chunk_ch.len() == chunk_size {
+                    chunk_ch.assign_to(buf_ch);
+                } else {
+                    chunk_ch.assign_to(&mut buf_ch[..chunk_ch.len()]);
+                    for b in buf_ch[chunk_ch.len()..].iter_mut() {
+                        *b = 0.
+                    }
+                }
+            }
+            resampler.process_into_buffer(&inbuf, &mut outbuf, None)?;
+            for (res_ch, mut out_ch) in
+                outbuf.iter().zip(out_chunk_iter.next().unwrap().axis_iter_mut(Axis(0)))
+            {
+                for (&x, y) in res_ch.iter().zip(out_ch.iter_mut()) {
+                    *y = MaybeUninit::new(x);
+                }
+            }
+        }
+        for in_ch in inbuf.iter_mut() {
+            in_ch.fill(0.)
+        }
+        resampler.process_into_buffer(&inbuf, &mut outbuf, None)?;
+        for (res_ch, mut out_ch) in
+            outbuf.iter().zip(out_chunk_iter.next().unwrap().axis_iter_mut(Axis(0)))
+        {
+            for (&x, y) in res_ch.iter().zip(out_ch.iter_mut()) {
+                *y = MaybeUninit::new(x);
+            }
+        }
+        let mut out = unsafe { out.assume_init() };
+        out.slice_axis_inplace(
+            Axis(1),
+            Slice::from(chunk_size_out / 2..chunk_size_out / 2 + out_len),
+        );
+        Ok(out)
+    }
+
+    fn noise_arr2(channels: usize, len: usize) -> Array2<f32> {
+        // Deterministic, dependency-free pseudo noise; the resamplers are linear so the exact
+        // signal does not matter, only that it is non-trivial and reproducible.
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        Array2::from_shape_fn((channels, len), |_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 40) as f32 / 8388608. - 1.
+        })
+    }
+
+    const RESAMPLE_LENS: [usize; 10] = [0, 1, 479, 480, 2047, 2048, 2049, 2240, 4480, 100_000];
+
+    /// The rewritten `resample()` must be bit-identical to the original implementation.
+    #[rstest]
+    #[case(48000, 44100)]
+    #[case(44100, 48000)]
+    #[case(48000, 16000)]
+    #[case(16000, 48000)]
+    fn test_resample_matches_reference(#[case] sr: usize, #[case] new_sr: usize) {
+        for channels in [1, 2] {
+            for len in RESAMPLE_LENS {
+                let x = noise_arr2(channels, len);
+                let want = resample_reference(x.view(), sr, new_sr, None).unwrap();
+                let got = resample(x.view(), sr, new_sr, None).unwrap();
+                assert_eq!(got.shape(), want.shape(), "sr {sr}->{new_sr} ch {channels} len {len}");
+                assert_eq!(
+                    got, want,
+                    "sr {sr}->{new_sr} ch {channels} len {len} mismatch"
+                );
+            }
+        }
+    }
+
+    /// Driving `StreamingResampler` with irregular push sizes must match one-shot `resample()`
+    /// exactly. This is what licenses streaming the CLI at every sample rate.
+    #[rstest]
+    #[case(48000, 44100)]
+    #[case(44100, 48000)]
+    #[case(48000, 16000)]
+    #[case(16000, 48000)]
+    #[case(48000, 48000)]
+    fn test_streaming_resampler_matches_resample(#[case] sr: usize, #[case] new_sr: usize) {
+        // Deliberately co-prime-ish with the resampler chunk size so chunk boundaries land at a
+        // different offset on every push.
+        const PUSH_SIZES: [usize; 4] = [1, 7, 480, 4096];
+        for channels in [1, 2] {
+            for len in RESAMPLE_LENS {
+                let x = noise_arr2(channels, len);
+                let want = resample(x.view(), sr, new_sr, None).unwrap();
+
+                let mut rs = StreamingResampler::new(sr, new_sr, channels, None).unwrap();
+                assert_eq!(rs.is_passthrough(), sr == new_sr);
+                let mut out: Vec<Vec<f32>> = vec![Vec::new(); channels];
+                let mut pos = 0;
+                let mut i = 0;
+                while pos < len {
+                    let n = PUSH_SIZES[i % PUSH_SIZES.len()].min(len - pos);
+                    let rows: Vec<&[f32]> = (0..channels)
+                        .map(|c| &x.as_slice().unwrap()[c * len + pos..c * len + pos + n])
+                        .collect();
+                    rs.push(&rows, n, &mut out).unwrap();
+                    pos += n;
+                    i += 1;
+                }
+                rs.flush(&mut out).unwrap();
+
+                let ctx = format!("sr {sr}->{new_sr} ch {channels} len {len}");
+                for (c, got) in out.iter().enumerate().take(channels) {
+                    assert!(
+                        got.len() >= want.len_of(Axis(1)),
+                        "{ctx}: streamed {} frames, want {}",
+                        got.len(),
+                        want.len_of(Axis(1))
+                    );
+                    assert_eq!(
+                        &got[..want.len_of(Axis(1))],
+                        want.index_axis(Axis(0), c).to_slice().unwrap(),
+                        "{ctx}: channel {c} mismatch"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_streaming_resampler_out_len() {
+        assert_eq!(StreamingResampler::out_len(0, 44100, 48000), 0);
+        assert_eq!(StreamingResampler::out_len(441, 44100, 48000), 480);
+        assert_eq!(StreamingResampler::out_len(1, 44100, 48000), 2);
+        assert_eq!(StreamingResampler::out_len(12345, 48000, 48000), 12345);
+        // 2 h at 48 kHz: the equivalent f32 expression quantizes to multiples of 32 here.
+        let two_h = 2 * 3600 * 48000;
+        assert_eq!(StreamingResampler::out_len(two_h, 48000, 44100), 317520000);
+    }
+
 }

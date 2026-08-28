@@ -1061,3 +1061,72 @@ pub fn as_arrayview_mut_complex<'a>(
         ArrayViewMutD::from_shape_ptr(shape, ptr)
     }
 }
+
+#[cfg(all(test, feature = "default-model", feature = "wav-utils"))]
+mod tests {
+    use super::*;
+    use crate::wav_utils::ReadWav;
+
+    /// Real speech, not synthetic noise: the LSNR gate mutes pure noise outright
+    /// (`apply_stages` at the top of this file), which would make every comparison below
+    /// trivially equal.
+    fn test_audio(n_hops: usize, hop: usize) -> Array2<f32> {
+        let reader = ReadWav::new("../assets/noisy_snr0.wav").unwrap();
+        let mut x = reader.samples_arr2().unwrap();
+        x.slice_axis_inplace(Axis(1), ndarray::Slice::from(0..n_hops * hop));
+        x.as_standard_layout().to_owned()
+    }
+
+    fn run(model: &mut DfTract, noisy: ArrayView2<f32>) -> Array2<f32> {
+        let hop = model.hop_size;
+        let mut enh: Array2<f32> = Array2::zeros(noisy.raw_dim());
+        for (ns_f, enh_f) in noisy
+            .axis_chunks_iter(Axis(1), hop)
+            .zip(enh.view_mut().axis_chunks_iter_mut(Axis(1), hop))
+        {
+            model.process(ns_f, enh_f).unwrap();
+        }
+        enh
+    }
+
+    /// Cloning a pristine `DfTract` must yield the same output as a freshly constructed one.
+    /// This is what lets the CLI give every input file a clean model state without paying to
+    /// re-parse the ONNX graphs.
+    #[test]
+    fn test_clone_is_pristine() {
+        let rp = RuntimeParams::default();
+        let template = DfTract::new(DfParams::default(), &rp).unwrap();
+        let noisy = test_audio(200, template.hop_size);
+
+        // Dirty a clone of the template first, to make sure that cannot affect the template.
+        let mut used = template.clone();
+        run(&mut used, noisy.view());
+        let mut cloned = template.clone();
+
+        let mut fresh = DfTract::new(DfParams::default(), &rp).unwrap();
+        let got = run(&mut cloned, noisy.view());
+        let want = run(&mut fresh, noisy.view());
+        assert!(got.iter().any(|&x| x != 0.), "test signal was muted; pick a different asset");
+        assert_eq!(
+            got, want,
+            "clone of a pristine template diverged from a freshly constructed model"
+        );
+    }
+
+    /// The converse, so the test above cannot pass vacuously: a model that has already seen
+    /// audio carries state that changes its output.
+    #[test]
+    fn test_state_actually_carries_over() {
+        let rp = RuntimeParams::default();
+        let mut used = DfTract::new(DfParams::default(), &rp).unwrap();
+        let noisy = test_audio(200, used.hop_size);
+        run(&mut used, noisy.view());
+
+        let mut fresh = DfTract::new(DfParams::default(), &rp).unwrap();
+        assert_ne!(
+            run(&mut used, noisy.view()),
+            run(&mut fresh, noisy.view()),
+            "expected leftover model state to change the output"
+        );
+    }
+}
