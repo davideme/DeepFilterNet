@@ -454,7 +454,7 @@ impl DfTract {
             TValue::from(self.cplx_buf.clone().permute_axes(&[0, 3, 1, 2])?)
         ))?;
 
-        let &lsnr = enc_emb.pop().unwrap().try_as_plain()?.to_scalar::<f32>()?;
+        let &lsnr = enc_emb.pop().unwrap().try_as_plain_ram()?.to_scalar::<f32>()?;
         let c0 = enc_emb.pop().unwrap();
         let emb = enc_emb.pop().unwrap();
 
