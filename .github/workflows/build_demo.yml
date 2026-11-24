@@ -13,13 +13,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Pinned, not nightly: the demo's GUI stack (iced 0.12 -> winit 0.29 ->
+        # objc2 0.4.1) stopped compiling on rustc 1.102.0-nightly (2026-11-23,
+        # E0277 in objc2's ivar_forwarding_impls.rs), which broke the macOS job
+        # with no change in this repo. Nothing here needs nightly. 1.98.0 is
+        # verified to build `df-demo --features ui`; bump it deliberately, and
+        # expect 1.102+ to need an iced upgrade off objc2 0.4.
         include:
           - os: ubuntu-22.04
-            rust: nightly
+            rust: "1.98.0"
           - os: macos-15
-            rust: nightly
+            rust: "1.98.0"
           - os: windows-2022
-            rust: nightly
+            rust: "1.98.0"
             ext: .exe
     steps:
       - name: Checkout repository
